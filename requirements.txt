@@ -1,0 +1,6 @@
+telebot
+gspread
+openai
+oauth2client
+python-dotenv
+requests
