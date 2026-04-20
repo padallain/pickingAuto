@@ -5,6 +5,7 @@ import sys
 import base64
 import os
 import tempfile
+import json
 from dotenv import load_dotenv
 
 
@@ -17,16 +18,25 @@ def get_required_env(var_name):
         raise RuntimeError(f"Falta la variable de entorno requerida: {var_name}")
     return value
 
+
+def get_google_client():
+    credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    credentials_file = os.getenv("GOOGLE_CREDENTIALS_FILE", "credenciales.json")
+
+    if credentials_json:
+        return gspread.service_account_from_dict(json.loads(credentials_json))
+
+    return gspread.service_account(filename=credentials_file)
+
 print("[INFO] Iniciando bot de picking...")
 try:
     openai_api_key = get_required_env("OPENAI_API_KEY")
     telegram_bot_token = get_required_env("TELEGRAM_BOT_TOKEN")
-    google_credentials_file = os.getenv("GOOGLE_CREDENTIALS_FILE", "credenciales.json")
     google_sheet_name = os.getenv("GOOGLE_SHEET_NAME", "ISOLA")
 
     client = OpenAI(api_key=openai_api_key)
     bot = telebot.TeleBot(telegram_bot_token)
-    gc = gspread.service_account(filename=google_credentials_file)
+    gc = get_google_client()
     hoja = gc.open(google_sheet_name).sheet1
 
     # --- Asegurar encabezado con columna Chocolates ---
