@@ -68,6 +68,11 @@ except Exception as e:
 
 # --- Manejo de múltiples hojas por pedido ---
 user_pedidos = {}
+# --- Pedidos pendientes de aprobación por el admin ---
+pendientes_aprobacion = {}
+
+# --- ID del administrador (solo este puede aprobar) ---
+ADMIN_USER_ID = 275573212
 
 
 # --- Lista de códigos de chocolates ---
@@ -202,6 +207,9 @@ def procesar_evaluacion(message):
 
 # --- Handler para finalizar y guardar todas las hojas de un pedido ---
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('finalizar'))
+
+# --- Handler para finalizar y enviar a aprobación del admin ---
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('finalizar'))
 def finalizar_pedido(message):
     try:
         user_id = message.from_user.id
@@ -223,7 +231,42 @@ def finalizar_pedido(message):
         if user_id != owner_id:
             bot.reply_to(message, "❌ Solo la persona que subió las fotos puede cerrar este pedido.")
             return
-        hojas = user_pedidos[owner_id][pedido_num]
+        # Guardar en pendientes de aprobación
+        pendientes_aprobacion[pedido_num] = {
+            "hojas": user_pedidos[owner_id][pedido_num],
+            "owner_id": owner_id
+        }
+        bot.reply_to(message, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador. Será revisado antes de guardarse en Google Sheets.")
+        # Notificar al admin
+        try:
+            resumen = f"Pedido {pedido_num} pendiente de aprobación. Total hojas: {len(user_pedidos[owner_id][pedido_num])}.\nEnviado por usuario: {owner_id}"
+            bot.send_message(ADMIN_USER_ID, resumen + f"\nPara aprobar, usa: /aprobar {pedido_num}")
+        except Exception as e:
+            print(f"[ERROR] No se pudo notificar al admin: {e}")
+        # Eliminar de user_pedidos
+        del user_pedidos[owner_id][pedido_num]
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        bot.reply_to(message, f"❌ Error al enviar a aprobación: {e}")
+
+
+# --- Handler para que solo el admin apruebe y guarde en Google Sheets ---
+@bot.message_handler(commands=['aprobar'])
+def aprobar_pedido(message):
+    try:
+        user_id = message.from_user.id
+        if user_id != ADMIN_USER_ID:
+            bot.reply_to(message, "❌ Solo el administrador puede aprobar pedidos.")
+            return
+        partes = message.text.strip().split()
+        if len(partes) < 2:
+            bot.reply_to(message, "Debes indicar el número de pedido: /aprobar <pedido_num>")
+            return
+        pedido_num = partes[1]
+        if pedido_num not in pendientes_aprobacion:
+            bot.reply_to(message, f"No hay pedido pendiente de aprobación con el número {pedido_num}.")
+            return
+        hojas = pendientes_aprobacion[pedido_num]["hojas"]
         total_hojas = len(hojas)
         for idx, hoja_datos in enumerate(hojas, 1):
             fila = [
@@ -237,11 +280,11 @@ def finalizar_pedido(message):
                 hoja_datos.get("usuario_telegram", "")
             ]
             hoja.append_row(fila)
-        bot.reply_to(message, f"✅ Pedido {pedido_num} guardado con {total_hojas} hoja(s) en Google Sheets.")
-        print(f"[INFO] Pedido {pedido_num} guardado con {total_hojas} hoja(s) para usuario {user_id}")
-        del user_pedidos[owner_id][pedido_num]
+        bot.reply_to(message, f"✅ Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) en Google Sheets.")
+        print(f"[INFO] Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) por el admin {user_id}")
+        del pendientes_aprobacion[pedido_num]
     except Exception as e:
         print(f"[ERROR] {e}")
-        bot.reply_to(message, f"❌ Error al guardar el pedido: {e}")
+        bot.reply_to(message, f"❌ Error al aprobar el pedido: {e}")
 
 bot.polling(timeout=10, long_polling_timeout=5)
