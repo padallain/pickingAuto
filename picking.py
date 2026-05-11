@@ -313,46 +313,50 @@ def aprobar_pedido_callback(call):
         hojas.pop(hoja_idx)
         if not hojas:
             del pendientes_aprobacion[pedido_num]
-    # --- Handler para editar hoja (flujo interactivo) ---
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('editar:'))
-    def editar_pedido_callback(call):
-        try:
-            user_id = call.from_user.id
-            if user_id != ADMIN_USER_ID:
-                bot.answer_callback_query(call.id, "❌ Solo el administrador puede editar pedidos.", show_alert=True)
-                return
-            parts = call.data.split(':')
-            pedido_num = parts[1]
-            hoja_idx = int(parts[2]) if len(parts) > 2 else 0
-            if pedido_num not in pendientes_aprobacion:
-                bot.answer_callback_query(call.id, f"No hay pedido pendiente con el número {pedido_num}.", show_alert=True)
-                return
-            hojas = pendientes_aprobacion[pedido_num]["hojas"]
-            if hoja_idx >= len(hojas):
-                bot.answer_callback_query(call.id, "Índice de hoja inválido.", show_alert=True)
-                return
-            hoja_datos = hojas[hoja_idx]
-            # Guardar contexto de edición
-            if "edicion" not in pendientes_aprobacion[pedido_num]:
-                pendientes_aprobacion[pedido_num]["edicion"] = {}
-            pendientes_aprobacion[pedido_num]["edicion"][user_id] = hoja_idx
-            # Mostrar datos actuales y pedir edición
-            texto = (
-                f"Edita los datos de la hoja {hoja_idx+1} del pedido {pedido_num} enviando los campos en este formato (uno por línea):\n"
-                f"fecha=\n{hoja_datos['fecha']}\n"
-                f"pedido_num=\n{hoja_datos['pedido_num']}\n"
-                f"num_cajas=\n{hoja_datos['num_cajas']}\n"
-                f"responsable=\n{hoja_datos['responsable']}\n"
-                f"chocolates=\n{hoja_datos.get('chocolates', 0)}\n"
-                f"usuario_telegram=\n{hoja_datos.get('usuario_telegram', '')}\n"
-                f"productos=\n" + '\n'.join([f"{p[0]},{p[1]}" for p in hoja_datos.get('productos', [])]) + "\n"
-                "\nEjemplo de respuesta:\nfecha=2024-05-10\npedido_num=1234\nnum_cajas=10\nresponsable=Juan\nchocolates=5\nusuario_telegram=@usuario\nproductos=0010,2\nproductos=0020,3"
-            )
-            bot.send_message(user_id, texto)
-            bot.answer_callback_query(call.id, "Envía los datos editados como mensaje.", show_alert=True)
-        except Exception as e:
-            print(f"[ERROR] Edición: {e}")
-            bot.answer_callback_query(call.id, f"❌ Error en edición: {e}", show_alert=True)
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        bot.answer_callback_query(call.id, f"❌ Error al aprobar el pedido: {e}", show_alert=True)
+
+# --- Handler para editar hoja (flujo interactivo) ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('editar:'))
+def editar_pedido_callback(call):
+    try:
+        user_id = call.from_user.id
+        if user_id != ADMIN_USER_ID:
+            bot.answer_callback_query(call.id, "❌ Solo el administrador puede editar pedidos.", show_alert=True)
+            return
+        parts = call.data.split(':')
+        pedido_num = parts[1]
+        hoja_idx = int(parts[2]) if len(parts) > 2 else 0
+        if pedido_num not in pendientes_aprobacion:
+            bot.answer_callback_query(call.id, f"No hay pedido pendiente con el número {pedido_num}.", show_alert=True)
+            return
+        hojas = pendientes_aprobacion[pedido_num]["hojas"]
+        if hoja_idx >= len(hojas):
+            bot.answer_callback_query(call.id, "Índice de hoja inválido.", show_alert=True)
+            return
+        hoja_datos = hojas[hoja_idx]
+        # Guardar contexto de edición
+        if "edicion" not in pendientes_aprobacion[pedido_num]:
+            pendientes_aprobacion[pedido_num]["edicion"] = {}
+        pendientes_aprobacion[pedido_num]["edicion"][user_id] = hoja_idx
+        # Mostrar datos actuales y pedir edición
+        texto = (
+            f"Edita los datos de la hoja {hoja_idx+1} del pedido {pedido_num} enviando los campos en este formato (uno por línea):\n"
+            f"fecha=\n{hoja_datos['fecha']}\n"
+            f"pedido_num=\n{hoja_datos['pedido_num']}\n"
+            f"num_cajas=\n{hoja_datos['num_cajas']}\n"
+            f"responsable=\n{hoja_datos['responsable']}\n"
+            f"chocolates=\n{hoja_datos.get('chocolates', 0)}\n"
+            f"usuario_telegram=\n{hoja_datos.get('usuario_telegram', '')}\n"
+            f"productos=\n" + '\n'.join([f"{p[0]},{p[1]}" for p in hoja_datos.get('productos', [])]) + "\n"
+            "\nEjemplo de respuesta:\nfecha=2024-05-10\npedido_num=1234\nnum_cajas=10\nresponsable=Juan\nchocolates=5\nusuario_telegram=@usuario\nproductos=0010,2\nproductos=0020,3"
+        )
+        bot.send_message(user_id, texto)
+        bot.answer_callback_query(call.id, "Envía los datos editados como mensaje.", show_alert=True)
+    except Exception as e:
+        print(f"[ERROR] Edición: {e}")
+        bot.answer_callback_query(call.id, f"❌ Error en edición: {e}", show_alert=True)
 
 # --- Handler para recibir datos editados del admin ---
 @bot.message_handler(func=lambda m: m.from_user.id == ADMIN_USER_ID and any(p in m.text for p in ["fecha=","pedido_num=","num_cajas=","responsable=","chocolates=","usuario_telegram=","productos="]))
