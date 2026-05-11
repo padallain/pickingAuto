@@ -194,7 +194,8 @@ def procesar_evaluacion(message):
                 "usuario_telegram": usuario_telegram,
                 "productos": productos,
                 "chat_id": message.chat.id,
-                "message_id": message.message_id
+                "message_id": message.message_id,
+                "file_id": message.photo[-1].file_id
             })
             total_hojas = len(user_pedidos[user_id][pedido_num])
             cierre_msg = f"finalizar {pedido_num}"
@@ -246,19 +247,19 @@ def finalizar_pedido(message):
         # Notificar al admin con botón de aprobación y datos extraídos
         try:
             hojas = user_pedidos[owner_id][pedido_num]
-            resumen = f"Pedido {pedido_num} pendiente de aprobación. Total hojas: {len(hojas)}.\nEnviado por usuario: {owner_id}\n\n"
             for idx, hoja_datos in enumerate(hojas, 1):
-                resumen += f"--- Hoja {idx} ---\n"
+                resumen = f"Pedido {pedido_num} pendiente de aprobación. Hoja {idx} de {len(hojas)}.\nEnviado por usuario: {owner_id}\n"
                 resumen += f"Fecha: {hoja_datos['fecha']}\nPedido N°: {hoja_datos['pedido_num']}\nCajas: {hoja_datos['num_cajas']}\nResponsable: {hoja_datos['responsable']}\nChocolates: {hoja_datos.get('chocolates', 0)}\nUsuario Telegram: {hoja_datos.get('usuario_telegram', '')}\n"
                 if hoja_datos.get('productos'):
                     resumen += "Productos extraídos:\nCódigo | Cantidad\n"
                     for prod in hoja_datos['productos']:
                         resumen += f"{prod[0]} | {prod[1]}\n"
-                resumen += "\n"
-            markup = types.InlineKeyboardMarkup()
-            btn = types.InlineKeyboardButton("Aprobar", callback_data=f"aprobar:{pedido_num}")
-            markup.add(btn)
-            bot.send_message(ADMIN_USER_ID, resumen, reply_markup=markup)
+                markup = types.InlineKeyboardMarkup()
+                btn_aprobar = types.InlineKeyboardButton("Aprobar", callback_data=f"aprobar:{pedido_num}:{idx-1}")
+                btn_editar = types.InlineKeyboardButton("Editar", callback_data=f"editar:{pedido_num}:{idx-1}")
+                markup.add(btn_aprobar, btn_editar)
+                # Enviar la foto y los datos al admin
+                bot.send_photo(ADMIN_USER_ID, hoja_datos["file_id"], caption=resumen, reply_markup=markup)
         except Exception as e:
             print(f"[ERROR] No se pudo notificar al admin: {e}")
         # Eliminar de user_pedidos
@@ -278,33 +279,44 @@ def aprobar_pedido_callback(call):
         if user_id != ADMIN_USER_ID:
             bot.answer_callback_query(call.id, "❌ Solo el administrador puede aprobar pedidos.", show_alert=True)
             return
-        pedido_num = call.data.split(':', 1)[1]
+        parts = call.data.split(':')
+        pedido_num = parts[1]
+        hoja_idx = int(parts[2]) if len(parts) > 2 else 0
         if pedido_num not in pendientes_aprobacion:
             bot.answer_callback_query(call.id, f"No hay pedido pendiente de aprobación con el número {pedido_num}.", show_alert=True)
             return
         hojas = pendientes_aprobacion[pedido_num]["hojas"]
-        total_hojas = len(hojas)
-        for idx, hoja_datos in enumerate(hojas, 1):
-            fila = [
-                hoja_datos["fecha"],
-                hoja_datos["pedido_num"],
-                str(idx),
-                str(total_hojas),
-                hoja_datos["num_cajas"],
-                hoja_datos["responsable"],
-                hoja_datos.get("chocolates", 0),
-                hoja_datos.get("usuario_telegram", "")
-            ]
-            hoja.append_row(fila)
-            # Intentar borrar la foto original del chat
-            try:
-                if hoja_datos.get("chat_id") and hoja_datos.get("message_id"):
-                    bot.delete_message(hoja_datos["chat_id"], hoja_datos["message_id"])
-            except Exception as e:
-                print(f"[ERROR] No se pudo borrar la foto del chat: {e}")
-        bot.edit_message_text(f"✅ Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) en Google Sheets. Las fotos originales han sido eliminadas del grupo.", call.message.chat.id, call.message.message_id)
-        print(f"[INFO] Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) por el admin {user_id}")
-        del pendientes_aprobacion[pedido_num]
+        if hoja_idx >= len(hojas):
+            bot.answer_callback_query(call.id, "Índice de hoja inválido.", show_alert=True)
+            return
+        hoja_datos = hojas[hoja_idx]
+        fila = [
+            hoja_datos["fecha"],
+            hoja_datos["pedido_num"],
+            str(hoja_idx+1),
+            str(len(hojas)),
+            hoja_datos["num_cajas"],
+            hoja_datos["responsable"],
+            hoja_datos.get("chocolates", 0),
+            hoja_datos.get("usuario_telegram", "")
+        ]
+        hoja.append_row(fila)
+        # Intentar borrar la foto original del chat
+        try:
+            if hoja_datos.get("chat_id") and hoja_datos.get("message_id"):
+                bot.delete_message(hoja_datos["chat_id"], hoja_datos["message_id"])
+        except Exception as e:
+            print(f"[ERROR] No se pudo borrar la foto del chat: {e}")
+        bot.edit_message_caption(caption=f"✅ Hoja {hoja_idx+1} del pedido {pedido_num} aprobada y guardada en Google Sheets. La foto original ha sido eliminada.", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        print(f"[INFO] Hoja {hoja_idx+1} del pedido {pedido_num} aprobada y guardada por el admin {user_id}")
+        # Eliminar la hoja aprobada de la lista
+        hojas.pop(hoja_idx)
+        if not hojas:
+            del pendientes_aprobacion[pedido_num]
+    # --- Handler para editar hoja (solo notifica por ahora) ---
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('editar:'))
+    def editar_pedido_callback(call):
+        bot.answer_callback_query(call.id, "Funcionalidad de edición manual. Corrige los datos y vuelve a enviar si es necesario.", show_alert=True)
     except Exception as e:
         print(f"[ERROR] {e}")
         bot.answer_callback_query(call.id, f"❌ Error al aprobar el pedido: {e}", show_alert=True)
