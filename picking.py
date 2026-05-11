@@ -389,16 +389,31 @@ def recibir_edicion_admin(message):
                     elif key == "usuario_telegram":
                         hoja_datos["usuario_telegram"] = val
                     elif key == "productos":
-                        # productos=0010,2
                         if 'productos_editados' not in hoja_datos:
                             hoja_datos['productos_editados'] = []
                         hoja_datos['productos_editados'].append(val)
-                # Si se editaron productos, reemplazar
                 if 'productos_editados' in hoja_datos:
                     hoja_datos['productos'] = [p.split(',') for p in hoja_datos['productos_editados'] if ',' in p]
                     del hoja_datos['productos_editados']
-                bot.reply_to(message, f"✅ Hoja {hoja_idx+1} del pedido {pedido_num} actualizada. Puedes aprobarla ahora.")
-                # Limpiar contexto de edición
+                # Reenviar mensaje con botones de aprobar/editar y datos actualizados
+                resumen = (
+                    f"Hoja {hoja_idx+1} del pedido {pedido_num} EDITADA.\n"
+                    f"Fecha: {hoja_datos['fecha']}\nPedido N°: {hoja_datos['pedido_num']}\nCajas: {hoja_datos['num_cajas']}\nResponsable: {hoja_datos['responsable']}\nChocolates: {hoja_datos.get('chocolates', 0)}\nUsuario Telegram: {hoja_datos.get('usuario_telegram', '')}\n"
+                )
+                if hoja_datos.get('productos'):
+                    resumen += "Productos extraídos:\nCódigo | Cantidad\n"
+                    for prod in hoja_datos['productos']:
+                        resumen += f"{prod[0]} | {prod[1]}\n"
+                markup = types.InlineKeyboardMarkup()
+                btn_aprobar = types.InlineKeyboardButton("Aprobar", callback_data=f"aprobar:{pedido_num}:{hoja_idx}")
+                btn_editar = types.InlineKeyboardButton("Editar", callback_data=f"editar:{pedido_num}:{hoja_idx}")
+                markup.add(btn_aprobar, btn_editar)
+                # Reenviar la foto si existe
+                if 'file_id' in hoja_datos:
+                    bot.send_photo(user_id, hoja_datos['file_id'], caption=resumen, reply_markup=markup)
+                else:
+                    bot.send_message(user_id, resumen, reply_markup=markup)
+                bot.reply_to(message, f"✅ Hoja {hoja_idx+1} del pedido {pedido_num} actualizada. Puedes aprobarla ahora desde el nuevo mensaje.")
                 del datos["edicion"][user_id]
                 return
     except Exception as e:
