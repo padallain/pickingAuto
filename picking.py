@@ -198,11 +198,14 @@ def procesar_evaluacion(message):
                 "file_id": message.photo[-1].file_id
             })
             total_hojas = len(user_pedidos[user_id][pedido_num])
-            cierre_msg = f"finalizar {pedido_num}"
+            # Botón para finalizar pedido
+            markup = types.InlineKeyboardMarkup()
+            btn_finalizar = types.InlineKeyboardButton("Finalizar pedido", callback_data=f"finalizar:{pedido_num}")
+            markup.add(btn_finalizar)
             if total_hojas == 1:
-                bot.reply_to(message, f"✅ Hoja 1 registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido copia y pega este mensaje: \n\n{cierre_msg}")
+                bot.reply_to(message, f"✅ Hoja 1 registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
             else:
-                bot.reply_to(message, f"✅ Hoja {total_hojas} registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido copia y pega este mensaje: \n\n{cierre_msg}")
+                bot.reply_to(message, f"✅ Hoja {total_hojas} registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
             print(f"[INFO] Hoja {total_hojas} guardada temporalmente para pedido {pedido_num} del usuario {user_id}")
         else:
             bot.reply_to(message, "❌ No se encontraron datos válidos para guardar.")
