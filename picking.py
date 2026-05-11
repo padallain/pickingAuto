@@ -76,8 +76,6 @@ pendientes_aprobacion = {}
 # --- ID del administrador (solo este puede aprobar) ---
 ADMIN_USER_ID = 275573212
 
-# --- Lista de usuarios autorizados (whitelist) ---
-USERS_WHITELIST = {275573212}  # Agrega aquí más user_ids separados por coma
 
 
 # --- Lista de códigos de chocolates ---
@@ -88,10 +86,6 @@ CODIGOS_CHOCOLATES = set([
 
 @bot.message_handler(content_types=['photo'])
 def procesar_evaluacion(message):
-    # Solo usuarios autorizados pueden usar el bot
-    if message.from_user.id not in USERS_WHITELIST:
-        bot.reply_to(message, "⛔️ No tienes permiso para usar este bot. Contacta al administrador.")
-        return
     try:
         user_id = message.from_user.id
         username = message.from_user.username or ""
@@ -223,10 +217,6 @@ def procesar_evaluacion(message):
 # --- Handler para finalizar y enviar a aprobación del admin ---
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('finalizar'))
 def finalizar_pedido(message):
-    # Solo usuarios autorizados pueden usar el bot
-    if message.from_user.id not in USERS_WHITELIST:
-        bot.reply_to(message, "⛔️ No tienes permiso para usar este bot. Contacta al administrador.")
-        return
     try:
         user_id = message.from_user.id
         partes = message.text.strip().split()
@@ -283,10 +273,6 @@ def finalizar_pedido(message):
 # --- Handler para aprobar pedido desde botón (callback) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('aprobar:'))
 def aprobar_pedido_callback(call):
-    # Solo usuarios autorizados pueden usar el bot
-    if call.from_user.id not in USERS_WHITELIST:
-        bot.answer_callback_query(call.id, "⛔️ No tienes permiso para usar este bot.", show_alert=True)
-        return
     try:
         user_id = call.from_user.id
         if user_id != ADMIN_USER_ID:
