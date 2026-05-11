@@ -78,7 +78,6 @@ ADMIN_USER_ID = 275573212
 
 
 
-
 # --- Lista de códigos de chocolates ---
 CODIGOS_CHOCOLATES = set([
     "0010","0011","0012","0018","0019","0020","0021","0022","0023","0024","0025","0026","0030","0031","0032","0033","0036","0042","0044","0050","0062","0063","0080","0081","0082","0084","0088","0102","0106",
@@ -87,8 +86,6 @@ CODIGOS_CHOCOLATES = set([
 
 @bot.message_handler(content_types=['photo'])
 def procesar_evaluacion(message):
-    # Solo usuarios autorizados pueden usar el bot
-   
     try:
         user_id = message.from_user.id
         username = message.from_user.username or ""
@@ -197,16 +194,15 @@ def procesar_evaluacion(message):
                 "usuario_telegram": usuario_telegram,
                 "productos": productos,
                 "chat_id": message.chat.id,
-                "message_id": message.message_id
+                "message_id": message.message_id,
+                "file_id": message.photo[-1].file_id
             })
             total_hojas = len(user_pedidos[user_id][pedido_num])
-            markup = types.InlineKeyboardMarkup()
-            btn = types.InlineKeyboardButton("Finalizar pedido", callback_data=f"finalizar:{pedido_num}")
-            markup.add(btn)
+            cierre_msg = f"finalizar {pedido_num}"
             if total_hojas == 1:
-                bot.reply_to(message, f"✅ Hoja 1 registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
+                bot.reply_to(message, f"✅ Hoja 1 registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido copia y pega este mensaje: \n\n{cierre_msg}")
             else:
-                bot.reply_to(message, f"✅ Hoja {total_hojas} registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
+                bot.reply_to(message, f"✅ Hoja {total_hojas} registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido copia y pega este mensaje: \n\n{cierre_msg}")
             print(f"[INFO] Hoja {total_hojas} guardada temporalmente para pedido {pedido_num} del usuario {user_id}")
         else:
             bot.reply_to(message, "❌ No se encontraron datos válidos para guardar.")
@@ -216,13 +212,19 @@ def procesar_evaluacion(message):
         bot.reply_to(message, f"❌ Error procesando la imagen: {e}")
 
 
+# --- Handler para finalizar y guardar todas las hojas de un pedido ---
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('finalizar'))
 
-# --- Handler para finalizar pedido desde botón ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('finalizar:'))
-def finalizar_pedido_callback(call):
+# --- Handler para finalizar y enviar a aprobación del admin ---
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('finalizar'))
+def finalizar_pedido(message):
     try:
-        user_id = call.from_user.id
-        pedido_num = call.data.split(':', 1)[1]
+        user_id = message.from_user.id
+        partes = message.text.strip().split()
+        if len(partes) < 2:
+            bot.reply_to(message, "Debes indicar el número de pedido: finalizar <pedido_num>")
+            return
+        pedido_num = partes[1]
         # Buscar si el pedido existe y a quién pertenece
         found = False
         for uid in user_pedidos:
@@ -231,40 +233,40 @@ def finalizar_pedido_callback(call):
                 owner_id = uid
                 break
         if not found:
-            bot.answer_callback_query(call.id, f"No hay hojas registradas para el pedido {pedido_num}.", show_alert=True)
+            bot.reply_to(message, f"No hay hojas registradas para el pedido {pedido_num}.")
             return
         if user_id != owner_id:
-            bot.answer_callback_query(call.id, "❌ Solo el administrador puede aprobar y cerrar este pedido.", show_alert=True)
+            bot.reply_to(message, "❌ Solo el administrador puede aprobar y cerrar este pedido.")
             return
         # Guardar en pendientes de aprobación
         pendientes_aprobacion[pedido_num] = {
             "hojas": user_pedidos[owner_id][pedido_num],
             "owner_id": owner_id
         }
-        bot.answer_callback_query(call.id, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador.")
+        bot.reply_to(message, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador. Será revisado antes de guardarse en Google Sheets.")
         # Notificar al admin con botón de aprobación y datos extraídos
         try:
             hojas = user_pedidos[owner_id][pedido_num]
-            resumen = f"Pedido {pedido_num} pendiente de aprobación. Total hojas: {len(hojas)}.\nEnviado por usuario: {owner_id}\n\n"
             for idx, hoja_datos in enumerate(hojas, 1):
-                resumen += f"--- Hoja {idx} ---\n"
+                resumen = f"Pedido {pedido_num} pendiente de aprobación. Hoja {idx} de {len(hojas)}.\nEnviado por usuario: {owner_id}\n"
                 resumen += f"Fecha: {hoja_datos['fecha']}\nPedido N°: {hoja_datos['pedido_num']}\nCajas: {hoja_datos['num_cajas']}\nResponsable: {hoja_datos['responsable']}\nChocolates: {hoja_datos.get('chocolates', 0)}\nUsuario Telegram: {hoja_datos.get('usuario_telegram', '')}\n"
                 if hoja_datos.get('productos'):
                     resumen += "Productos extraídos:\nCódigo | Cantidad\n"
                     for prod in hoja_datos['productos']:
                         resumen += f"{prod[0]} | {prod[1]}\n"
-                resumen += "\n"
-            markup = types.InlineKeyboardMarkup()
-            btn = types.InlineKeyboardButton("Aprobar", callback_data=f"aprobar:{pedido_num}")
-            markup.add(btn)
-            bot.send_message(ADMIN_USER_ID, resumen, reply_markup=markup)
+                markup = types.InlineKeyboardMarkup()
+                btn_aprobar = types.InlineKeyboardButton("Aprobar", callback_data=f"aprobar:{pedido_num}:{idx-1}")
+                btn_editar = types.InlineKeyboardButton("Editar", callback_data=f"editar:{pedido_num}:{idx-1}")
+                markup.add(btn_aprobar, btn_editar)
+                # Enviar la foto y los datos al admin
+                bot.send_photo(ADMIN_USER_ID, hoja_datos["file_id"], caption=resumen, reply_markup=markup)
         except Exception as e:
             print(f"[ERROR] No se pudo notificar al admin: {e}")
         # Eliminar de user_pedidos
         del user_pedidos[owner_id][pedido_num]
     except Exception as e:
         print(f"[ERROR] {e}")
-        bot.answer_callback_query(call.id, f"❌ Error al enviar a aprobación: {e}", show_alert=True)
+        bot.reply_to(message, f"❌ Error al enviar a aprobación: {e}")
 
 
 # --- Handler para que solo el admin apruebe y guarde en Google Sheets ---
@@ -272,42 +274,132 @@ def finalizar_pedido_callback(call):
 # --- Handler para aprobar pedido desde botón (callback) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('aprobar:'))
 def aprobar_pedido_callback(call):
-    # Solo usuarios autorizados pueden usar el bot
-    
     try:
         user_id = call.from_user.id
         if user_id != ADMIN_USER_ID:
             bot.answer_callback_query(call.id, "❌ Solo el administrador puede aprobar pedidos.", show_alert=True)
             return
-        pedido_num = call.data.split(':', 1)[1]
+        parts = call.data.split(':')
+        pedido_num = parts[1]
+        hoja_idx = int(parts[2]) if len(parts) > 2 else 0
         if pedido_num not in pendientes_aprobacion:
             bot.answer_callback_query(call.id, f"No hay pedido pendiente de aprobación con el número {pedido_num}.", show_alert=True)
             return
         hojas = pendientes_aprobacion[pedido_num]["hojas"]
-        total_hojas = len(hojas)
-        for idx, hoja_datos in enumerate(hojas, 1):
-            fila = [
-                hoja_datos["fecha"],
-                hoja_datos["pedido_num"],
-                str(idx),
-                str(total_hojas),
-                hoja_datos["num_cajas"],
-                hoja_datos["responsable"],
-                hoja_datos.get("chocolates", 0),
-                hoja_datos.get("usuario_telegram", "")
-            ]
-            hoja.append_row(fila)
-            # Intentar borrar la foto original del chat
-            try:
-                if hoja_datos.get("chat_id") and hoja_datos.get("message_id"):
-                    bot.delete_message(hoja_datos["chat_id"], hoja_datos["message_id"])
-            except Exception as e:
-                print(f"[ERROR] No se pudo borrar la foto del chat: {e}")
-        bot.edit_message_text(f"✅ Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) en Google Sheets. Las fotos originales han sido eliminadas del grupo.", call.message.chat.id, call.message.message_id)
-        print(f"[INFO] Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) por el admin {user_id}")
-        del pendientes_aprobacion[pedido_num]
+        if hoja_idx >= len(hojas):
+            bot.answer_callback_query(call.id, "Índice de hoja inválido.", show_alert=True)
+            return
+        hoja_datos = hojas[hoja_idx]
+        fila = [
+            hoja_datos["fecha"],
+            hoja_datos["pedido_num"],
+            str(hoja_idx+1),
+            str(len(hojas)),
+            hoja_datos["num_cajas"],
+            hoja_datos["responsable"],
+            hoja_datos.get("chocolates", 0),
+            hoja_datos.get("usuario_telegram", "")
+        ]
+        hoja.append_row(fila)
+        # Intentar borrar la foto original del chat
+        try:
+            if hoja_datos.get("chat_id") and hoja_datos.get("message_id"):
+                bot.delete_message(hoja_datos["chat_id"], hoja_datos["message_id"])
+        except Exception as e:
+            print(f"[ERROR] No se pudo borrar la foto del chat: {e}")
+        bot.edit_message_caption(caption=f"✅ Hoja {hoja_idx+1} del pedido {pedido_num} aprobada y guardada en Google Sheets. La foto original ha sido eliminada.", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        print(f"[INFO] Hoja {hoja_idx+1} del pedido {pedido_num} aprobada y guardada por el admin {user_id}")
+        # Eliminar la hoja aprobada de la lista
+        hojas.pop(hoja_idx)
+        if not hojas:
+            del pendientes_aprobacion[pedido_num]
+    # --- Handler para editar hoja (flujo interactivo) ---
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('editar:'))
+    def editar_pedido_callback(call):
+        try:
+            user_id = call.from_user.id
+            if user_id != ADMIN_USER_ID:
+                bot.answer_callback_query(call.id, "❌ Solo el administrador puede editar pedidos.", show_alert=True)
+                return
+            parts = call.data.split(':')
+            pedido_num = parts[1]
+            hoja_idx = int(parts[2]) if len(parts) > 2 else 0
+            if pedido_num not in pendientes_aprobacion:
+                bot.answer_callback_query(call.id, f"No hay pedido pendiente con el número {pedido_num}.", show_alert=True)
+                return
+            hojas = pendientes_aprobacion[pedido_num]["hojas"]
+            if hoja_idx >= len(hojas):
+                bot.answer_callback_query(call.id, "Índice de hoja inválido.", show_alert=True)
+                return
+            hoja_datos = hojas[hoja_idx]
+            # Guardar contexto de edición
+            if "edicion" not in pendientes_aprobacion[pedido_num]:
+                pendientes_aprobacion[pedido_num]["edicion"] = {}
+            pendientes_aprobacion[pedido_num]["edicion"][user_id] = hoja_idx
+            # Mostrar datos actuales y pedir edición
+            texto = (
+                f"Edita los datos de la hoja {hoja_idx+1} del pedido {pedido_num} enviando los campos en este formato (uno por línea):\n"
+                f"fecha=\n{hoja_datos['fecha']}\n"
+                f"pedido_num=\n{hoja_datos['pedido_num']}\n"
+                f"num_cajas=\n{hoja_datos['num_cajas']}\n"
+                f"responsable=\n{hoja_datos['responsable']}\n"
+                f"chocolates=\n{hoja_datos.get('chocolates', 0)}\n"
+                f"usuario_telegram=\n{hoja_datos.get('usuario_telegram', '')}\n"
+                f"productos=\n" + '\n'.join([f"{p[0]},{p[1]}" for p in hoja_datos.get('productos', [])]) + "\n"
+                "\nEjemplo de respuesta:\nfecha=2024-05-10\npedido_num=1234\nnum_cajas=10\nresponsable=Juan\nchocolates=5\nusuario_telegram=@usuario\nproductos=0010,2\nproductos=0020,3"
+            )
+            bot.send_message(user_id, texto)
+            bot.answer_callback_query(call.id, "Envía los datos editados como mensaje.", show_alert=True)
+        except Exception as e:
+            print(f"[ERROR] Edición: {e}")
+            bot.answer_callback_query(call.id, f"❌ Error en edición: {e}", show_alert=True)
+
+# --- Handler para recibir datos editados del admin ---
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_USER_ID and any(p in m.text for p in ["fecha=","pedido_num=","num_cajas=","responsable=","chocolates=","usuario_telegram=","productos="]))
+def recibir_edicion_admin(message):
+    try:
+        user_id = message.from_user.id
+        # Buscar pedido y hoja en edición
+        for pedido_num, datos in pendientes_aprobacion.items():
+            edicion = datos.get("edicion", {})
+            if user_id in edicion:
+                hoja_idx = edicion[user_id]
+                hoja_datos = datos["hojas"][hoja_idx]
+                # Parsear campos
+                for line in message.text.splitlines():
+                    if '=' not in line:
+                        continue
+                    key, val = line.split('=',1)
+                    key = key.strip()
+                    val = val.strip()
+                    if key == "fecha":
+                        hoja_datos["fecha"] = val
+                    elif key == "pedido_num":
+                        hoja_datos["pedido_num"] = val
+                    elif key == "num_cajas":
+                        hoja_datos["num_cajas"] = val
+                    elif key == "responsable":
+                        hoja_datos["responsable"] = val
+                    elif key == "chocolates":
+                        hoja_datos["chocolates"] = val
+                    elif key == "usuario_telegram":
+                        hoja_datos["usuario_telegram"] = val
+                    elif key == "productos":
+                        # productos=0010,2
+                        if 'productos_editados' not in hoja_datos:
+                            hoja_datos['productos_editados'] = []
+                        hoja_datos['productos_editados'].append(val)
+                # Si se editaron productos, reemplazar
+                if 'productos_editados' in hoja_datos:
+                    hoja_datos['productos'] = [p.split(',') for p in hoja_datos['productos_editados'] if ',' in p]
+                    del hoja_datos['productos_editados']
+                bot.reply_to(message, f"✅ Hoja {hoja_idx+1} del pedido {pedido_num} actualizada. Puedes aprobarla ahora.")
+                # Limpiar contexto de edición
+                del datos["edicion"][user_id]
+                return
     except Exception as e:
-        print(f"[ERROR] {e}")
-        bot.answer_callback_query(call.id, f"❌ Error al aprobar el pedido: {e}", show_alert=True)
+        print(f"[ERROR] Recibir edición: {e}")
+        bot.reply_to(message, f"❌ Error al actualizar: {e}")
+
 
 bot.polling(timeout=10, long_polling_timeout=5)
