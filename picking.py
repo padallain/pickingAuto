@@ -72,8 +72,12 @@ user_pedidos = {}
 # --- Pedidos pendientes de aprobación por el admin ---
 pendientes_aprobacion = {}
 
+
 # --- ID del administrador (solo este puede aprobar) ---
 ADMIN_USER_ID = 275573212
+
+# --- Lista de usuarios autorizados (whitelist) ---
+USERS_WHITELIST = {275573212}  # Agrega aquí más user_ids separados por coma
 
 
 # --- Lista de códigos de chocolates ---
@@ -84,6 +88,10 @@ CODIGOS_CHOCOLATES = set([
 
 @bot.message_handler(content_types=['photo'])
 def procesar_evaluacion(message):
+    # Solo usuarios autorizados pueden usar el bot
+    if message.from_user.id not in USERS_WHITELIST:
+        bot.reply_to(message, "⛔️ No tienes permiso para usar este bot. Contacta al administrador.")
+        return
     try:
         user_id = message.from_user.id
         username = message.from_user.username or ""
@@ -189,7 +197,10 @@ def procesar_evaluacion(message):
                 "num_cajas": num_cajas,
                 "responsable": responsable,
                 "chocolates": total_chocolates,
-                "usuario_telegram": usuario_telegram
+                "usuario_telegram": usuario_telegram,
+                "productos": productos,
+                "chat_id": message.chat.id,
+                "message_id": message.message_id
             })
             total_hojas = len(user_pedidos[user_id][pedido_num])
             cierre_msg = f"finalizar {pedido_num}"
@@ -212,6 +223,10 @@ def procesar_evaluacion(message):
 # --- Handler para finalizar y enviar a aprobación del admin ---
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('finalizar'))
 def finalizar_pedido(message):
+    # Solo usuarios autorizados pueden usar el bot
+    if message.from_user.id not in USERS_WHITELIST:
+        bot.reply_to(message, "⛔️ No tienes permiso para usar este bot. Contacta al administrador.")
+        return
     try:
         user_id = message.from_user.id
         partes = message.text.strip().split()
@@ -238,9 +253,18 @@ def finalizar_pedido(message):
             "owner_id": owner_id
         }
         bot.reply_to(message, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador. Será revisado antes de guardarse en Google Sheets.")
-        # Notificar al admin con botón de aprobación
+        # Notificar al admin con botón de aprobación y datos extraídos
         try:
-            resumen = f"Pedido {pedido_num} pendiente de aprobación. Total hojas: {len(user_pedidos[owner_id][pedido_num])}.\nEnviado por usuario: {owner_id}"
+            hojas = user_pedidos[owner_id][pedido_num]
+            resumen = f"Pedido {pedido_num} pendiente de aprobación. Total hojas: {len(hojas)}.\nEnviado por usuario: {owner_id}\n\n"
+            for idx, hoja_datos in enumerate(hojas, 1):
+                resumen += f"--- Hoja {idx} ---\n"
+                resumen += f"Fecha: {hoja_datos['fecha']}\nPedido N°: {hoja_datos['pedido_num']}\nCajas: {hoja_datos['num_cajas']}\nResponsable: {hoja_datos['responsable']}\nChocolates: {hoja_datos.get('chocolates', 0)}\nUsuario Telegram: {hoja_datos.get('usuario_telegram', '')}\n"
+                if hoja_datos.get('productos'):
+                    resumen += "Productos extraídos:\nCódigo | Cantidad\n"
+                    for prod in hoja_datos['productos']:
+                        resumen += f"{prod[0]} | {prod[1]}\n"
+                resumen += "\n"
             markup = types.InlineKeyboardMarkup()
             btn = types.InlineKeyboardButton("Aprobar", callback_data=f"aprobar:{pedido_num}")
             markup.add(btn)
@@ -259,6 +283,10 @@ def finalizar_pedido(message):
 # --- Handler para aprobar pedido desde botón (callback) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('aprobar:'))
 def aprobar_pedido_callback(call):
+    # Solo usuarios autorizados pueden usar el bot
+    if call.from_user.id not in USERS_WHITELIST:
+        bot.answer_callback_query(call.id, "⛔️ No tienes permiso para usar este bot.", show_alert=True)
+        return
     try:
         user_id = call.from_user.id
         if user_id != ADMIN_USER_ID:
@@ -282,7 +310,13 @@ def aprobar_pedido_callback(call):
                 hoja_datos.get("usuario_telegram", "")
             ]
             hoja.append_row(fila)
-        bot.edit_message_text(f"✅ Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) en Google Sheets.", call.message.chat.id, call.message.message_id)
+            # Intentar borrar la foto original del chat
+            try:
+                if hoja_datos.get("chat_id") and hoja_datos.get("message_id"):
+                    bot.delete_message(hoja_datos["chat_id"], hoja_datos["message_id"])
+            except Exception as e:
+                print(f"[ERROR] No se pudo borrar la foto del chat: {e}")
+        bot.edit_message_text(f"✅ Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) en Google Sheets. Las fotos originales han sido eliminadas del grupo.", call.message.chat.id, call.message.message_id)
         print(f"[INFO] Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) por el admin {user_id}")
         del pendientes_aprobacion[pedido_num]
     except Exception as e:
