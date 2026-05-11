@@ -76,8 +76,7 @@ pendientes_aprobacion = {}
 # --- ID del administrador (solo este puede aprobar) ---
 ADMIN_USER_ID = 275573212
 
-# --- Lista de usuarios autorizados (whitelist) ---
-USERS_WHITELIST = {275573212}  # Agrega aquí más user_ids separados por coma
+
 
 
 # --- Lista de códigos de chocolates ---
