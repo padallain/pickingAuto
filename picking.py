@@ -200,11 +200,13 @@ def procesar_evaluacion(message):
                 "message_id": message.message_id
             })
             total_hojas = len(user_pedidos[user_id][pedido_num])
-            cierre_msg = f"finalizar {pedido_num}"
+            markup = types.InlineKeyboardMarkup()
+            btn = types.InlineKeyboardButton("Finalizar pedido", callback_data=f"finalizar:{pedido_num}")
+            markup.add(btn)
             if total_hojas == 1:
-                bot.reply_to(message, f"✅ Hoja 1 registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido copia y pega este mensaje: \n\n{cierre_msg}")
+                bot.reply_to(message, f"✅ Hoja 1 registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
             else:
-                bot.reply_to(message, f"✅ Hoja {total_hojas} registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido copia y pega este mensaje: \n\n{cierre_msg}")
+                bot.reply_to(message, f"✅ Hoja {total_hojas} registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
             print(f"[INFO] Hoja {total_hojas} guardada temporalmente para pedido {pedido_num} del usuario {user_id}")
         else:
             bot.reply_to(message, "❌ No se encontraron datos válidos para guardar.")
@@ -214,23 +216,13 @@ def procesar_evaluacion(message):
         bot.reply_to(message, f"❌ Error procesando la imagen: {e}")
 
 
-# --- Handler para finalizar y guardar todas las hojas de un pedido ---
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('finalizar'))
 
-# --- Handler para finalizar y enviar a aprobación del admin ---
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith('finalizar'))
-def finalizar_pedido(message):
-    # Solo usuarios autorizados pueden usar el bot
-    if message.from_user.id not in USERS_WHITELIST:
-        bot.reply_to(message, "⛔️ No tienes permiso para usar este bot. Contacta al administrador.")
-        return
+# --- Handler para finalizar pedido desde botón ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('finalizar:'))
+def finalizar_pedido_callback(call):
     try:
-        user_id = message.from_user.id
-        partes = message.text.strip().split()
-        if len(partes) < 2:
-            bot.reply_to(message, "Debes indicar el número de pedido: finalizar <pedido_num>")
-            return
-        pedido_num = partes[1]
+        user_id = call.from_user.id
+        pedido_num = call.data.split(':', 1)[1]
         # Buscar si el pedido existe y a quién pertenece
         found = False
         for uid in user_pedidos:
@@ -239,17 +231,17 @@ def finalizar_pedido(message):
                 owner_id = uid
                 break
         if not found:
-            bot.reply_to(message, f"No hay hojas registradas para el pedido {pedido_num}.")
+            bot.answer_callback_query(call.id, f"No hay hojas registradas para el pedido {pedido_num}.", show_alert=True)
             return
         if user_id != owner_id:
-            bot.reply_to(message, "❌ Solo el administrador puede aprobar y cerrar este pedido.")
+            bot.answer_callback_query(call.id, "❌ Solo el administrador puede aprobar y cerrar este pedido.", show_alert=True)
             return
         # Guardar en pendientes de aprobación
         pendientes_aprobacion[pedido_num] = {
             "hojas": user_pedidos[owner_id][pedido_num],
             "owner_id": owner_id
         }
-        bot.reply_to(message, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador. Será revisado antes de guardarse en Google Sheets.")
+        bot.answer_callback_query(call.id, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador.")
         # Notificar al admin con botón de aprobación y datos extraídos
         try:
             hojas = user_pedidos[owner_id][pedido_num]
@@ -272,7 +264,7 @@ def finalizar_pedido(message):
         del user_pedidos[owner_id][pedido_num]
     except Exception as e:
         print(f"[ERROR] {e}")
-        bot.reply_to(message, f"❌ Error al enviar a aprobación: {e}")
+        bot.answer_callback_query(call.id, f"❌ Error al enviar a aprobación: {e}", show_alert=True)
 
 
 # --- Handler para que solo el admin apruebe y guarde en Google Sheets ---
