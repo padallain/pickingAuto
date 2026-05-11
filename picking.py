@@ -1,4 +1,5 @@
 import telebot
+from telebot import types
 import gspread
 from openai import OpenAI
 import sys
@@ -229,7 +230,7 @@ def finalizar_pedido(message):
             bot.reply_to(message, f"No hay hojas registradas para el pedido {pedido_num}.")
             return
         if user_id != owner_id:
-            bot.reply_to(message, "❌ Solo la persona que subió las fotos puede cerrar este pedido.")
+            bot.reply_to(message, "❌ Solo el administrador puede aprobar y cerrar este pedido.")
             return
         # Guardar en pendientes de aprobación
         pendientes_aprobacion[pedido_num] = {
@@ -237,10 +238,13 @@ def finalizar_pedido(message):
             "owner_id": owner_id
         }
         bot.reply_to(message, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador. Será revisado antes de guardarse en Google Sheets.")
-        # Notificar al admin
+        # Notificar al admin con botón de aprobación
         try:
             resumen = f"Pedido {pedido_num} pendiente de aprobación. Total hojas: {len(user_pedidos[owner_id][pedido_num])}.\nEnviado por usuario: {owner_id}"
-            bot.send_message(ADMIN_USER_ID, resumen + f"\nPara aprobar, usa: /aprobar {pedido_num}")
+            markup = types.InlineKeyboardMarkup()
+            btn = types.InlineKeyboardButton("Aprobar", callback_data=f"aprobar:{pedido_num}")
+            markup.add(btn)
+            bot.send_message(ADMIN_USER_ID, resumen, reply_markup=markup)
         except Exception as e:
             print(f"[ERROR] No se pudo notificar al admin: {e}")
         # Eliminar de user_pedidos
@@ -251,20 +255,18 @@ def finalizar_pedido(message):
 
 
 # --- Handler para que solo el admin apruebe y guarde en Google Sheets ---
-@bot.message_handler(commands=['aprobar'])
-def aprobar_pedido(message):
+
+# --- Handler para aprobar pedido desde botón (callback) ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('aprobar:'))
+def aprobar_pedido_callback(call):
     try:
-        user_id = message.from_user.id
+        user_id = call.from_user.id
         if user_id != ADMIN_USER_ID:
-            bot.reply_to(message, "❌ Solo el administrador puede aprobar pedidos.")
+            bot.answer_callback_query(call.id, "❌ Solo el administrador puede aprobar pedidos.", show_alert=True)
             return
-        partes = message.text.strip().split()
-        if len(partes) < 2:
-            bot.reply_to(message, "Debes indicar el número de pedido: /aprobar <pedido_num>")
-            return
-        pedido_num = partes[1]
+        pedido_num = call.data.split(':', 1)[1]
         if pedido_num not in pendientes_aprobacion:
-            bot.reply_to(message, f"No hay pedido pendiente de aprobación con el número {pedido_num}.")
+            bot.answer_callback_query(call.id, f"No hay pedido pendiente de aprobación con el número {pedido_num}.", show_alert=True)
             return
         hojas = pendientes_aprobacion[pedido_num]["hojas"]
         total_hojas = len(hojas)
@@ -280,11 +282,11 @@ def aprobar_pedido(message):
                 hoja_datos.get("usuario_telegram", "")
             ]
             hoja.append_row(fila)
-        bot.reply_to(message, f"✅ Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) en Google Sheets.")
+        bot.edit_message_text(f"✅ Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) en Google Sheets.", call.message.chat.id, call.message.message_id)
         print(f"[INFO] Pedido {pedido_num} aprobado y guardado con {total_hojas} hoja(s) por el admin {user_id}")
         del pendientes_aprobacion[pedido_num]
     except Exception as e:
         print(f"[ERROR] {e}")
-        bot.reply_to(message, f"❌ Error al aprobar el pedido: {e}")
+        bot.answer_callback_query(call.id, f"❌ Error al aprobar el pedido: {e}", show_alert=True)
 
 bot.polling(timeout=10, long_polling_timeout=5)
