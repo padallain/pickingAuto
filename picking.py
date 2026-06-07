@@ -309,6 +309,38 @@ def guardar_pedido_en_sheets(pedido_num, hojas, start_index=1, total_hojas=None)
             print(f"[ERROR] No se pudo borrar la foto del chat: {e}")
 
 
+def obtener_filas_pedido_en_sheets(pedido_num):
+    filas = []
+    todas = hoja.get_all_values()
+    for row_number, row_values in enumerate(todas[1:], start=2):
+        if len(row_values) > 1 and row_values[1] == str(pedido_num):
+            filas.append(row_number)
+    return filas
+
+
+def guardar_hoja_admin_en_sheets(hoja_datos):
+    pedido_num = hoja_datos["pedido_num"]
+    filas_existentes = obtener_filas_pedido_en_sheets(pedido_num)
+    numero_hoja = len(filas_existentes) + 1
+    total_hojas = numero_hoja
+
+    for row_number in filas_existentes:
+        hoja.update_cell(row_number, 4, str(total_hojas))
+
+    fila = [
+        hoja_datos["fecha"],
+        hoja_datos["pedido_num"],
+        str(numero_hoja),
+        str(total_hojas),
+        hoja_datos["num_cajas"],
+        hoja_datos["responsable"],
+        hoja_datos.get("chocolates", 0),
+        hoja_datos.get("usuario_telegram", "")
+    ]
+    hoja.append_row(fila)
+    return numero_hoja
+
+
 
 # --- Lista de códigos de chocolates ---
 CODIGOS_CHOCOLATES = set([
@@ -392,8 +424,27 @@ def procesar_evaluacion(message):
                 total_chocolates += cantidad
 
         if fila_valida and all(fila_valida):
-            # --- Validar que el pedido no esté siendo usado por otro usuario ---
             fecha, pedido_num, num_cajas, responsable = fila_valida
+            hoja_datos = {
+                "fecha": fecha,
+                "pedido_num": pedido_num,
+                "num_cajas": num_cajas,
+                "responsable": responsable,
+                "chocolates": total_chocolates,
+                "usuario_telegram": usuario_telegram,
+                "productos": productos,
+                "chat_id": message.chat.id,
+                "message_id": message.message_id,
+                "file_id": message.photo[-1].file_id
+            }
+
+            if user_id == ADMIN_USER_ID:
+                numero_hoja = guardar_hoja_admin_en_sheets(hoja_datos)
+                bot.reply_to(message, f"✅ Hoja {numero_hoja} del pedido {pedido_num} guardada directamente en Google Sheets.")
+                print(f"[INFO] Hoja {numero_hoja} del pedido {pedido_num} guardada directamente por el administrador {user_id}")
+                return
+
+            # --- Validar que el pedido no esté siendo usado por otro usuario ---
             for uid in user_pedidos:
                 if pedido_num in user_pedidos[uid]:
                     if uid == user_id:
@@ -410,18 +461,7 @@ def procesar_evaluacion(message):
                 user_pedidos[user_id] = {}
             if pedido_num not in user_pedidos[user_id]:
                 user_pedidos[user_id][pedido_num] = []
-            user_pedidos[user_id][pedido_num].append({
-                "fecha": fecha,
-                "pedido_num": pedido_num,
-                "num_cajas": num_cajas,
-                "responsable": responsable,
-                "chocolates": total_chocolates,
-                "usuario_telegram": usuario_telegram,
-                "productos": productos,
-                "chat_id": message.chat.id,
-                "message_id": message.message_id,
-                "file_id": message.photo[-1].file_id
-            })
+            user_pedidos[user_id][pedido_num].append(hoja_datos)
             total_hojas = len(user_pedidos[user_id][pedido_num])
             # Botón para finalizar pedido
             markup = types.InlineKeyboardMarkup()
