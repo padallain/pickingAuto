@@ -58,12 +58,57 @@ def normalize_label(value):
     )
 
 
+def normalize_extracted_value(value, fallback=""):
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    if not text or text.lower() in {"null", "none", "no visible", "no se ve", "no legible", "n/a", "na"}:
+        return fallback
+    return text
+
+
+def parse_json_response(content):
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None, None
+
+    fecha = normalize_extracted_value(payload.get("fecha"))
+    pedido_num = normalize_extracted_value(payload.get("pedido_num"))
+    num_cajas = normalize_extracted_value(payload.get("num_cajas"))
+    responsable = normalize_extracted_value(payload.get("responsable"), "SIN RESPONSABLE")
+
+    productos = []
+    for producto in payload.get("productos", []):
+        if not isinstance(producto, dict):
+            continue
+        codigo = normalize_extracted_value(producto.get("codigo")).upper()
+        cantidad = normalize_extracted_value(producto.get("cantidad"))
+        if codigo and cantidad:
+            productos.append([codigo, cantidad])
+
+    fila_valida = [fecha, pedido_num, num_cajas, responsable]
+    if not fecha or not pedido_num or not num_cajas:
+        return None, productos
+
+    return fila_valida, productos
+
+
 def parse_openai_response(content):
+    fila_json, productos_json = parse_json_response(content)
+    if fila_json:
+        return fila_json, productos_json
+
     fields = {
         "fecha": None,
         "pedido_num": None,
         "num_cajas": None,
-        "responsable": None,
+        "responsable": "SIN RESPONSABLE",
     }
     productos = []
     parsing_productos = False
@@ -120,9 +165,9 @@ def parse_openai_response(content):
         fields["fecha"],
         fields["pedido_num"],
         fields["num_cajas"],
-        fields["responsable"],
+        normalize_extracted_value(fields["responsable"], "SIN RESPONSABLE"),
     ]
-    if not all(fila_valida):
+    if not fila_valida[0] or not fila_valida[1] or not fila_valida[2]:
         return None, productos
 
     return fila_valida, productos
@@ -186,6 +231,48 @@ ADMIN_USER_ID = 275573212
 USERS_WHITELIST = UserWhitelist(parse_user_ids(os.getenv("USERS_WHITELIST")))
 
 
+def enviar_pedido_a_aprobacion(user_id, pedido_num):
+    found = False
+    owner_id = None
+    for uid in user_pedidos:
+        if pedido_num in user_pedidos[uid]:
+            found = True
+            owner_id = uid
+            break
+
+    if not found:
+        return False, f"No hay hojas registradas para el pedido {pedido_num}."
+
+    if user_id != owner_id:
+        return False, "❌ Solo el usuario que inició el pedido puede enviarlo a aprobación."
+
+    pendientes_aprobacion[pedido_num] = {
+        "hojas": user_pedidos[owner_id][pedido_num],
+        "owner_id": owner_id
+    }
+
+    try:
+        hojas = user_pedidos[owner_id][pedido_num]
+        for idx, hoja_datos in enumerate(hojas, 1):
+            resumen = f"Pedido {pedido_num} pendiente de aprobación. Hoja {idx} de {len(hojas)}.\nEnviado por usuario: {owner_id}\n"
+            resumen += f"Fecha: {hoja_datos['fecha']}\nPedido N°: {hoja_datos['pedido_num']}\nCajas: {hoja_datos['num_cajas']}\nResponsable: {hoja_datos['responsable']}\nChocolates: {hoja_datos.get('chocolates', 0)}\nUsuario Telegram: {hoja_datos.get('usuario_telegram', '')}\n"
+            if hoja_datos.get('productos'):
+                resumen += "Productos extraídos:\nCódigo | Cantidad\n"
+                for prod in hoja_datos['productos']:
+                    resumen += f"{prod[0]} | {prod[1]}\n"
+            markup = types.InlineKeyboardMarkup()
+            btn_aprobar = types.InlineKeyboardButton("Aprobar", callback_data=f"aprobar:{pedido_num}:{idx-1}")
+            btn_editar = types.InlineKeyboardButton("Editar", callback_data=f"editar:{pedido_num}:{idx-1}")
+            markup.add(btn_aprobar, btn_editar)
+            bot.send_photo(ADMIN_USER_ID, hoja_datos["file_id"], caption=resumen, reply_markup=markup)
+    except Exception as e:
+        print(f"[ERROR] No se pudo notificar al admin: {e}")
+        return False, f"❌ No se pudo notificar al administrador: {e}"
+
+    del user_pedidos[owner_id][pedido_num]
+    return True, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador. Será revisado antes de guardarse en Google Sheets."
+
+
 
 # --- Lista de códigos de chocolates ---
 CODIGOS_CHOCOLATES = set([
@@ -212,13 +299,25 @@ def procesar_evaluacion(message):
 
         # 2. Enviar la imagen a OpenAI GPT-4o para extraer datos
         prompt = (
-            "Extrae los siguientes datos de la imagen:\n"
-            "- Fecha del documento (parte superior derecha o donde aparezca)\n"
-            "- Pedido N° (parte superior derecha)\n"
-            "- Número de cajas que aparece en la línea de Observaciones (si existe) o suma las cantidades de cajas que aparecen en la columna de cajas/bultos\n"
-            "- Responsable (nombre en la sección 'PICKING')\n"
-            "- Una tabla con los productos: código y cantidad de cada producto que aparece en la hoja.\n"
-            "Responde primero los datos generales en formato tabla: Fecha, Pedido N°, Número de cajas, Responsable. Luego, debajo, una tabla con columnas: Código, Cantidad."
+            "Analiza esta foto de una hoja de picking y responde SOLO con JSON valido, sin texto extra ni markdown.\n"
+            "Busca estos campos exactos en el documento:\n"
+            "- fecha: toma la fecha visible del documento.\n"
+            "- pedido_num: toma el valor de 'Pedido N°' o 'Pedido No'.\n"
+            "- num_cajas: toma el total de la columna 'Bultos/Cajas'. Si no hay total impreso, suma las cantidades visibles de esa columna.\n"
+            "- responsable: toma solo el nombre escrito en la seccion 'PICKING' junto a 'Responsable'. Si el campo esta vacio o no se ve, devuelve 'SIN RESPONSABLE'.\n"
+            "- productos: extrae cada fila de producto usando la columna 'Referencia' como codigo y la columna 'Bultos/Cajas' como cantidad.\n"
+            "Ignora encabezados, observaciones, cliente, direccion y cualquier texto que no sea producto.\n"
+            "No inventes datos. Si un valor no se ve claramente, usa cadena vacia, excepto 'responsable' que debe ser 'SIN RESPONSABLE'.\n"
+            "Devuelve exactamente este esquema JSON:\n"
+            "{\n"
+            '  "fecha": "",\n'
+            '  "pedido_num": "",\n'
+            '  "num_cajas": "",\n'
+            '  "responsable": "",\n'
+            '  "productos": [\n'
+            '    {"codigo": "", "cantidad": ""}\n'
+            "  ]\n"
+            "}"
         )
         with open(temp_path, "rb") as image_file:
             img_base64 = base64.b64encode(image_file.read()).decode("utf-8")
@@ -319,48 +418,24 @@ def finalizar_pedido(message):
             bot.reply_to(message, "Debes indicar el número de pedido: finalizar <pedido_num>")
             return
         pedido_num = partes[1]
-        # Buscar si el pedido existe y a quién pertenece
-        found = False
-        for uid in user_pedidos:
-            if pedido_num in user_pedidos[uid]:
-                found = True
-                owner_id = uid
-                break
-        if not found:
-            bot.reply_to(message, f"No hay hojas registradas para el pedido {pedido_num}.")
-            return
-        if user_id != owner_id:
-            bot.reply_to(message, "❌ Solo el administrador puede aprobar y cerrar este pedido.")
-            return
-        # Guardar en pendientes de aprobación
-        pendientes_aprobacion[pedido_num] = {
-            "hojas": user_pedidos[owner_id][pedido_num],
-            "owner_id": owner_id
-        }
-        bot.reply_to(message, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador. Será revisado antes de guardarse en Google Sheets.")
-        # Notificar al admin con botón de aprobación y datos extraídos
-        try:
-            hojas = user_pedidos[owner_id][pedido_num]
-            for idx, hoja_datos in enumerate(hojas, 1):
-                resumen = f"Pedido {pedido_num} pendiente de aprobación. Hoja {idx} de {len(hojas)}.\nEnviado por usuario: {owner_id}\n"
-                resumen += f"Fecha: {hoja_datos['fecha']}\nPedido N°: {hoja_datos['pedido_num']}\nCajas: {hoja_datos['num_cajas']}\nResponsable: {hoja_datos['responsable']}\nChocolates: {hoja_datos.get('chocolates', 0)}\nUsuario Telegram: {hoja_datos.get('usuario_telegram', '')}\n"
-                if hoja_datos.get('productos'):
-                    resumen += "Productos extraídos:\nCódigo | Cantidad\n"
-                    for prod in hoja_datos['productos']:
-                        resumen += f"{prod[0]} | {prod[1]}\n"
-                markup = types.InlineKeyboardMarkup()
-                btn_aprobar = types.InlineKeyboardButton("Aprobar", callback_data=f"aprobar:{pedido_num}:{idx-1}")
-                btn_editar = types.InlineKeyboardButton("Editar", callback_data=f"editar:{pedido_num}:{idx-1}")
-                markup.add(btn_aprobar, btn_editar)
-                # Enviar la foto y los datos al admin
-                bot.send_photo(ADMIN_USER_ID, hoja_datos["file_id"], caption=resumen, reply_markup=markup)
-        except Exception as e:
-            print(f"[ERROR] No se pudo notificar al admin: {e}")
-        # Eliminar de user_pedidos
-        del user_pedidos[owner_id][pedido_num]
+        ok, respuesta = enviar_pedido_a_aprobacion(user_id, pedido_num)
+        bot.reply_to(message, respuesta)
     except Exception as e:
         print(f"[ERROR] {e}")
         bot.reply_to(message, f"❌ Error al enviar a aprobación: {e}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('finalizar:'))
+def finalizar_pedido_callback(call):
+    try:
+        pedido_num = call.data.split(':', 1)[1]
+        ok, respuesta = enviar_pedido_a_aprobacion(call.from_user.id, pedido_num)
+        bot.answer_callback_query(call.id, respuesta, show_alert=not ok)
+        if ok:
+            bot.send_message(call.message.chat.id, respuesta)
+    except Exception as e:
+        print(f"[ERROR] Finalizar callback: {e}")
+        bot.answer_callback_query(call.id, f"❌ Error al finalizar el pedido: {e}", show_alert=True)
 
 
 # --- Handler para que solo el admin apruebe y guarde en Google Sheets ---
