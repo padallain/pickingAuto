@@ -246,6 +246,17 @@ def enviar_pedido_a_aprobacion(user_id, pedido_num):
     if user_id != owner_id:
         return False, "❌ Solo el usuario que inició el pedido puede enviarlo a aprobación."
 
+    if user_id == ADMIN_USER_ID:
+        hojas = user_pedidos[owner_id][pedido_num]
+        try:
+            guardar_pedido_en_sheets(pedido_num, hojas)
+        except Exception as e:
+            print(f"[ERROR] No se pudo guardar el pedido {pedido_num} en Google Sheets: {e}")
+            return False, f"❌ Error al guardar en Google Sheets: {e}"
+
+        del user_pedidos[owner_id][pedido_num]
+        return True, f"✅ Pedido {pedido_num} guardado directamente en Google Sheets por el administrador."
+
     pendientes_aprobacion[pedido_num] = {
         "hojas": user_pedidos[owner_id][pedido_num],
         "owner_id": owner_id
@@ -271,6 +282,31 @@ def enviar_pedido_a_aprobacion(user_id, pedido_num):
 
     del user_pedidos[owner_id][pedido_num]
     return True, f"⏳ Pedido {pedido_num} enviado para aprobación del administrador. Será revisado antes de guardarse en Google Sheets."
+
+
+def guardar_pedido_en_sheets(pedido_num, hojas, start_index=1, total_hojas=None):
+    if total_hojas is None:
+        total_hojas = len(hojas)
+
+    for offset, hoja_datos in enumerate(hojas):
+        hoja_idx = start_index + offset
+        fila = [
+            hoja_datos["fecha"],
+            hoja_datos["pedido_num"],
+            str(hoja_idx),
+            str(total_hojas),
+            hoja_datos["num_cajas"],
+            hoja_datos["responsable"],
+            hoja_datos.get("chocolates", 0),
+            hoja_datos.get("usuario_telegram", "")
+        ]
+        hoja.append_row(fila)
+
+        try:
+            if hoja_datos.get("chat_id") and hoja_datos.get("message_id"):
+                bot.delete_message(hoja_datos["chat_id"], hoja_datos["message_id"])
+        except Exception as e:
+            print(f"[ERROR] No se pudo borrar la foto del chat: {e}")
 
 
 
@@ -459,23 +495,7 @@ def aprobar_pedido_callback(call):
             bot.answer_callback_query(call.id, "Índice de hoja inválido.", show_alert=True)
             return
         hoja_datos = hojas[hoja_idx]
-        fila = [
-            hoja_datos["fecha"],
-            hoja_datos["pedido_num"],
-            str(hoja_idx+1),
-            str(len(hojas)),
-            hoja_datos["num_cajas"],
-            hoja_datos["responsable"],
-            hoja_datos.get("chocolates", 0),
-            hoja_datos.get("usuario_telegram", "")
-        ]
-        hoja.append_row(fila)
-        # Intentar borrar la foto original del chat
-        try:
-            if hoja_datos.get("chat_id") and hoja_datos.get("message_id"):
-                bot.delete_message(hoja_datos["chat_id"], hoja_datos["message_id"])
-        except Exception as e:
-            print(f"[ERROR] No se pudo borrar la foto del chat: {e}")
+        guardar_pedido_en_sheets(pedido_num, [hoja_datos], start_index=hoja_idx + 1, total_hojas=len(hojas))
         bot.edit_message_caption(caption=f"✅ Hoja {hoja_idx+1} del pedido {pedido_num} aprobada y guardada en Google Sheets. La foto original ha sido eliminada.", chat_id=call.message.chat.id, message_id=call.message.message_id)
         print(f"[INFO] Hoja {hoja_idx+1} del pedido {pedido_num} aprobada y guardada por el admin {user_id}")
         # Eliminar la hoja aprobada de la lista
