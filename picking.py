@@ -7,6 +7,7 @@ import base64
 import os
 import tempfile
 import json
+import re
 from dotenv import load_dotenv
 
 
@@ -18,6 +19,113 @@ def get_required_env(var_name):
     if not value:
         raise RuntimeError(f"Falta la variable de entorno requerida: {var_name}")
     return value
+
+
+class UserWhitelist:
+    def __init__(self, user_ids):
+        self.user_ids = user_ids
+
+    def __contains__(self, user_id):
+        return not self.user_ids or user_id in self.user_ids
+
+
+def parse_user_ids(value):
+    if not value:
+        return set()
+
+    user_ids = set()
+    for raw_id in value.split(","):
+        raw_id = raw_id.strip()
+        if not raw_id:
+            continue
+        try:
+            user_ids.add(int(raw_id))
+        except ValueError:
+            print(f"[WARN] Ignorando user id invalido en USERS_WHITELIST: {raw_id}")
+    return user_ids
+
+
+def normalize_label(value):
+    return (
+        value.lower()
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("n°", "numero")
+        .strip()
+    )
+
+
+def parse_openai_response(content):
+    fields = {
+        "fecha": None,
+        "pedido_num": None,
+        "num_cajas": None,
+        "responsable": None,
+    }
+    productos = []
+    parsing_productos = False
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        normalized_line = normalize_label(line)
+        if "codigo" in normalized_line and "cantidad" in normalized_line:
+            parsing_productos = True
+            continue
+
+        if "|" in line:
+            parts = [part.strip() for part in line.split("|") if part.strip()]
+            if not parts or all(set(part) <= {"-", ":"} for part in parts):
+                continue
+
+            if not parsing_productos and len(parts) == 4:
+                normalized_parts = [normalize_label(part) for part in parts]
+                if "fecha" not in normalized_parts and "responsable" not in normalized_parts:
+                    fields["fecha"], fields["pedido_num"], fields["num_cajas"], fields["responsable"] = parts
+                    continue
+
+            if parsing_productos and len(parts) >= 2:
+                productos.append(parts[:2])
+                continue
+
+        if not parsing_productos and (":" in line or "=" in line):
+            separator = ":" if ":" in line else "="
+            key, value = line.split(separator, 1)
+            key = normalize_label(key)
+            value = value.strip()
+            if not value:
+                continue
+
+            if "fecha" in key:
+                fields["fecha"] = value
+            elif "pedido" in key:
+                fields["pedido_num"] = value
+            elif "cajas" in key:
+                fields["num_cajas"] = value
+            elif "responsable" in key:
+                fields["responsable"] = value
+            continue
+
+        if parsing_productos:
+            product_match = re.match(r"^([A-Za-z0-9]+)\s*[,;|]\s*(\d+)\s*$", line)
+            if product_match:
+                productos.append([product_match.group(1), product_match.group(2)])
+
+    fila_valida = [
+        fields["fecha"],
+        fields["pedido_num"],
+        fields["num_cajas"],
+        fields["responsable"],
+    ]
+    if not all(fila_valida):
+        return None, productos
+
+    return fila_valida, productos
 
 
 def get_google_client():
@@ -75,6 +183,7 @@ pendientes_aprobacion = {}
 
 # --- ID del administrador (solo este puede aprobar) ---
 ADMIN_USER_ID = 275573212
+USERS_WHITELIST = UserWhitelist(parse_user_ids(os.getenv("USERS_WHITELIST")))
 
 
 
@@ -134,26 +243,7 @@ def procesar_evaluacion(message):
 
         # 3. Procesar la respuesta de OpenAI
         datos = response.choices[0].message.content.strip()
-        fila_valida = None
-        productos = []
-        parsing_productos = False
-        for linea in datos.splitlines():
-            linea = linea.strip()
-            # Buscar tabla de datos generales
-            if not parsing_productos:
-                if "|" in linea and not linea.lower().startswith("| fecha") and "-" not in linea:
-                    partes = [x.strip() for x in linea.split("|") if x.strip()]
-                    if len(partes) == 4:
-                        fila_valida = partes
-                if linea.lower().startswith("| código"):
-                    parsing_productos = True
-                continue
-            # Buscar tabla de productos
-            if parsing_productos:
-                if "|" in linea and not linea.lower().startswith("| código") and "-" not in linea:
-                    partes = [x.strip() for x in linea.split("|") if x.strip()]
-                    if len(partes) >= 2:
-                        productos.append(partes)
+        fila_valida, productos = parse_openai_response(datos)
 
         # Contar chocolates
         total_chocolates = 0
@@ -208,6 +298,7 @@ def procesar_evaluacion(message):
                 bot.reply_to(message, f"✅ Hoja {total_hojas} registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
             print(f"[INFO] Hoja {total_hojas} guardada temporalmente para pedido {pedido_num} del usuario {user_id}")
         else:
+            print(f"[DEBUG] Respuesta cruda de OpenAI sin parsear correctamente:\n{datos}")
             bot.reply_to(message, "❌ No se encontraron datos válidos para guardar.")
             print("[ERROR] No se encontraron datos válidos para guardar.")
     except Exception as e:
