@@ -1,7 +1,7 @@
 import telebot
 from telebot import types
 import gspread
-from openai import OpenAI
+import anthropic
 import sys
 import base64
 import os
@@ -184,11 +184,11 @@ def get_google_client():
 
 print("[INFO] Iniciando bot de picking...")
 try:
-    openai_api_key = get_required_env("OPENAI_API_KEY")
+    anthropic_api_key = get_required_env("ANTHROPIC_API_KEY")
     telegram_bot_token = get_required_env("TELEGRAM_BOT_TOKEN")
     google_sheet_name = os.getenv("GOOGLE_SHEET_NAME", "ISOLA")
 
-    client = OpenAI(api_key=openai_api_key)
+    client = anthropic.Anthropic(api_key=anthropic_api_key)
     bot = telebot.TeleBot(telegram_bot_token)
     gc = get_google_client()
     hoja = gc.open(google_sheet_name).sheet1
@@ -392,24 +392,32 @@ def procesar_evaluacion(message):
             print(f"[DEBUG] Tamaño base64: {len(img_base64)}")
             print(f"[DEBUG] Inicio base64: {img_base64[:50]}")
             try:
-                response = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": "Eres un experto en reconocimiento de texto en imágenes."},
-                        {"role": "user", "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
-                        ]}
-                    ],
+                response = client.messages.create(
+                    model="claude-opus-4-8",
+                    system="Eres un experto en reconocimiento de texto en imágenes.",
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": img_base64
+                                }
+                            },
+                            {"type": "text", "text": prompt}
+                        ]
+                    }],
                     max_tokens=600
                 )
             except Exception as e:
-                print(f"[DEBUG] Error al enviar a OpenAI: {e}")
+                print(f"[DEBUG] Error al enviar a Claude: {e}")
                 raise
         os.remove(temp_path)
 
-        # 3. Procesar la respuesta de OpenAI
-        datos = response.choices[0].message.content.strip()
+        # 3. Procesar la respuesta de Claude
+        datos = next(b.text for b in response.content if b.type == "text").strip()
         fila_valida, productos = parse_openai_response(datos)
 
         # Contar chocolates
