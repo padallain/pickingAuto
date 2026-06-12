@@ -1,6 +1,6 @@
 telebot
 gspread
-anthropic
+openai
 oauth2client
 python-dotenv
 requests

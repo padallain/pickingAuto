@@ -1,7 +1,7 @@
 import telebot
 from telebot import types
 import gspread
-import anthropic
+from openai import OpenAI
 import sys
 import base64
 import os
@@ -264,11 +264,11 @@ def get_google_client():
 
 print("[INFO] Iniciando bot de picking...")
 try:
-    anthropic_api_key = get_required_env("ANTHROPIC_API_KEY")
+    openai_api_key = get_required_env("OPENAI_API_KEY")
     telegram_bot_token = get_required_env("TELEGRAM_BOT_TOKEN")
     google_sheet_name = os.getenv("GOOGLE_SHEET_NAME", "ISOLA")
 
-    client = anthropic.Anthropic(api_key=anthropic_api_key)
+    client = OpenAI(api_key=openai_api_key)
     bot = telebot.TeleBot(telegram_bot_token)
     gc = get_google_client()
     hoja = gc.open(google_sheet_name).sheet1
@@ -472,102 +472,95 @@ def procesar_evaluacion(message):
             print(f"[DEBUG] Tamaño base64: {len(img_base64)}")
             print(f"[DEBUG] Inicio base64: {img_base64[:50]}")
             try:
-                response = client.messages.create(
-                    model="claude-opus-4-8",
-                    system="Eres un experto en reconocimiento de texto en imágenes.",
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": img_base64
-                                }
-                            },
-                            {"type": "text", "text": prompt}
-                        ]
-                    }],
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "Eres un experto en reconocimiento de texto en imágenes."},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
+                        ]}
+                    ],
                     max_tokens=600
                 )
             except Exception as e:
-                print(f"[DEBUG] Error al enviar a Claude: {e}")
+                print(f"[DEBUG] Error al enviar a OpenAI: {e}")
                 raise
-        os.remove(temp_path)
 
-        # 3. Procesar la respuesta de Claude
-        datos = next(b.text for b in response.content if b.type == "text").strip()
-        fila_valida, productos = parse_openai_response(datos)
-        num_cajas_enfocado = extract_num_cajas_with_focus(temp_path)
+        try:
+            # 3. Procesar la respuesta de OpenAI
+            datos = response.choices[0].message.content.strip()
+            fila_valida, productos = parse_openai_response(datos)
+            num_cajas_enfocado = extract_num_cajas_with_focus(temp_path)
 
-        if fila_valida:
-            fila_valida[2] = num_cajas_enfocado or fila_valida[2] or sum_product_quantities(productos)
+            if fila_valida:
+                fila_valida[2] = num_cajas_enfocado or fila_valida[2] or sum_product_quantities(productos)
 
-        # Contar chocolates
-        total_chocolates = 0
-        for prod in productos:
-            codigo = prod[0].upper()
-            try:
-                cantidad = int(prod[1])
-            except:
-                cantidad = 0
-            if codigo in CODIGOS_CHOCOLATES:
-                total_chocolates += cantidad
+            # Contar chocolates
+            total_chocolates = 0
+            for prod in productos:
+                codigo = prod[0].upper()
+                try:
+                    cantidad = int(prod[1])
+                except:
+                    cantidad = 0
+                if codigo in CODIGOS_CHOCOLATES:
+                    total_chocolates += cantidad
 
-        if fila_valida and all(fila_valida):
-            fecha, pedido_num, num_cajas, responsable = fila_valida
-            hoja_datos = {
-                "fecha": fecha,
-                "pedido_num": pedido_num,
-                "num_cajas": num_cajas,
-                "responsable": responsable,
-                "chocolates": total_chocolates,
-                "usuario_telegram": usuario_telegram,
-                "productos": productos,
-                "chat_id": message.chat.id,
-                "message_id": message.message_id,
-                "file_id": message.photo[-1].file_id
-            }
+            if fila_valida and all(fila_valida):
+                fecha, pedido_num, num_cajas, responsable = fila_valida
+                hoja_datos = {
+                    "fecha": fecha,
+                    "pedido_num": pedido_num,
+                    "num_cajas": num_cajas,
+                    "responsable": responsable,
+                    "chocolates": total_chocolates,
+                    "usuario_telegram": usuario_telegram,
+                    "productos": productos,
+                    "chat_id": message.chat.id,
+                    "message_id": message.message_id,
+                    "file_id": message.photo[-1].file_id
+                }
 
-            if user_id == ADMIN_USER_ID:
-                numero_hoja = guardar_hoja_admin_en_sheets(hoja_datos)
-                bot.reply_to(message, f"✅ Hoja {numero_hoja} del pedido {pedido_num} guardada directamente en Google Sheets.")
-                print(f"[INFO] Hoja {numero_hoja} del pedido {pedido_num} guardada directamente por el administrador {user_id}")
-                return
+                if user_id == ADMIN_USER_ID:
+                    numero_hoja = guardar_hoja_admin_en_sheets(hoja_datos)
+                    bot.reply_to(message, f"✅ Hoja {numero_hoja} del pedido {pedido_num} guardada directamente en Google Sheets.")
+                    print(f"[INFO] Hoja {numero_hoja} del pedido {pedido_num} guardada directamente por el administrador {user_id}")
+                    return
 
-            # --- Validar que el pedido no esté siendo usado por otro usuario ---
-            for uid in user_pedidos:
-                if pedido_num in user_pedidos[uid]:
-                    if uid == user_id:
-                        bot.reply_to(message, f"❌ Ya has iniciado el registro del pedido {pedido_num}. Si necesitas agregar más hojas, envíalas. Si deseas cerrarlo, copia y pega: finalizar {pedido_num}")
-                        print(f"[ERROR] El usuario ya inició el pedido {pedido_num}.")
-                        return
-                    else:
-                        # Alerta visible en el grupo
-                        nombre_alerta = usuario_telegram
-                        bot.send_message(message.chat.id, f"⚠️ Atención: {nombre_alerta} intentó registrar el pedido {pedido_num}, pero ya está siendo registrado por otra persona. Solo el usuario original puede continuar ese pedido.")
-                        print(f"[ERROR] Pedido {pedido_num} ya registrado por otro usuario.")
-                        return
-            if user_id not in user_pedidos:
-                user_pedidos[user_id] = {}
-            if pedido_num not in user_pedidos[user_id]:
-                user_pedidos[user_id][pedido_num] = []
-            user_pedidos[user_id][pedido_num].append(hoja_datos)
-            total_hojas = len(user_pedidos[user_id][pedido_num])
-            # Botón para finalizar pedido
-            markup = types.InlineKeyboardMarkup()
-            btn_finalizar = types.InlineKeyboardButton("Finalizar pedido", callback_data=f"finalizar:{pedido_num}")
-            markup.add(btn_finalizar)
-            if total_hojas == 1:
-                bot.reply_to(message, f"✅ Hoja 1 registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
+                # --- Validar que el pedido no esté siendo usado por otro usuario ---
+                for uid in user_pedidos:
+                    if pedido_num in user_pedidos[uid]:
+                        if uid == user_id:
+                            bot.reply_to(message, f"❌ Ya has iniciado el registro del pedido {pedido_num}. Si necesitas agregar más hojas, envíalas. Si deseas cerrarlo, copia y pega: finalizar {pedido_num}")
+                            print(f"[ERROR] El usuario ya inició el pedido {pedido_num}.")
+                            return
+                        else:
+                            nombre_alerta = usuario_telegram
+                            bot.send_message(message.chat.id, f"⚠️ Atención: {nombre_alerta} intentó registrar el pedido {pedido_num}, pero ya está siendo registrado por otra persona. Solo el usuario original puede continuar ese pedido.")
+                            print(f"[ERROR] Pedido {pedido_num} ya registrado por otro usuario.")
+                            return
+                if user_id not in user_pedidos:
+                    user_pedidos[user_id] = {}
+                if pedido_num not in user_pedidos[user_id]:
+                    user_pedidos[user_id][pedido_num] = []
+                user_pedidos[user_id][pedido_num].append(hoja_datos)
+                total_hojas = len(user_pedidos[user_id][pedido_num])
+                markup = types.InlineKeyboardMarkup()
+                btn_finalizar = types.InlineKeyboardButton("Finalizar pedido", callback_data=f"finalizar:{pedido_num}")
+                markup.add(btn_finalizar)
+                if total_hojas == 1:
+                    bot.reply_to(message, f"✅ Hoja 1 registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
+                else:
+                    bot.reply_to(message, f"✅ Hoja {total_hojas} registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
+                print(f"[INFO] Hoja {total_hojas} guardada temporalmente para pedido {pedido_num} del usuario {user_id}")
             else:
-                bot.reply_to(message, f"✅ Hoja {total_hojas} registrada para el pedido {pedido_num}.\nChocolates en esta hoja: {total_chocolates}.\nEnvía otra foto si hay más hojas, o para cerrar el pedido pulsa el botón:", reply_markup=markup)
-            print(f"[INFO] Hoja {total_hojas} guardada temporalmente para pedido {pedido_num} del usuario {user_id}")
-        else:
-            print(f"[DEBUG] Respuesta cruda de OpenAI sin parsear correctamente:\n{datos}")
-            bot.reply_to(message, "❌ No se encontraron datos válidos para guardar.")
-            print("[ERROR] No se encontraron datos válidos para guardar.")
+                print(f"[DEBUG] Respuesta cruda de OpenAI sin parsear correctamente:\n{datos}")
+                bot.reply_to(message, "❌ No se encontraron datos válidos para guardar.")
+                print("[ERROR] No se encontraron datos válidos para guardar.")
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
     except Exception as e:
         print(f"[ERROR] {e}")
         bot.reply_to(message, f"❌ Error procesando la imagen: {e}")
