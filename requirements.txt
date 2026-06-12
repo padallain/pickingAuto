@@ -4,3 +4,4 @@ anthropic
 oauth2client
 python-dotenv
 requests
+pillow
