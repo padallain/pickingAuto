@@ -9,6 +9,7 @@ import tempfile
 import json
 import re
 from dotenv import load_dotenv
+from PIL import Image
 
 
 load_dotenv()
@@ -67,6 +68,85 @@ def normalize_extracted_value(value, fallback=""):
     return text
 
 
+def normalize_numeric_value(value, fallback=""):
+    text = normalize_extracted_value(value, fallback)
+    if not text:
+        return fallback
+
+    cleaned = text.upper().replace("O", "0")
+    match = re.search(r"\d+", cleaned)
+    if not match:
+        return fallback
+
+    normalized = match.group(0).lstrip("0")
+    return normalized or "0"
+
+
+def sum_product_quantities(productos):
+    total = 0
+    for producto in productos:
+        if not isinstance(producto, (list, tuple)) or len(producto) < 2:
+            continue
+        try:
+            total += int(normalize_numeric_value(producto[1], "0"))
+        except ValueError:
+            continue
+    return str(total) if total > 0 else ""
+
+
+def crop_num_cajas_region(image_path):
+    with Image.open(image_path) as image:
+        width, height = image.size
+        left = int(width * 0.58)
+        top = int(height * 0.24)
+        right = int(width * 0.96)
+        bottom = int(height * 0.58)
+        cropped = image.crop((left, top, right, bottom))
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp:
+        cropped.save(temp.name, format="JPEG", quality=95)
+        return temp.name
+
+
+def extract_num_cajas_with_focus(image_path):
+    crop_path = crop_num_cajas_region(image_path)
+    prompt = (
+        "Lee unicamente el numero de cajas dentro del campo 'Bultos/Cajas' de esta hoja de picking. "
+        "Ignora por completo 'Vencimiento', firmas, circulos, marcas a mano y cualquier otro numero fuera de esa celda. "
+        "Si hay un solo valor visible para cajas, devuelvelo. Si no se ve con claridad, devuelve cadena vacia. "
+        "Responde SOLO con JSON valido en este formato exacto: {\"num_cajas\":\"\"}"
+    )
+
+    try:
+        with open(crop_path, "rb") as image_file:
+            img_base64 = base64.b64encode(image_file.read()).decode("utf-8")
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "Eres un experto en OCR de documentos logistico-operativos."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
+                ]}
+            ],
+            max_tokens=80
+        )
+        content = response.choices[0].message.content.strip()
+        payload, _ = parse_json_response(content)
+        if payload:
+            return normalize_numeric_value(payload[2])
+
+        parsed_payload = json.loads(content)
+        return normalize_numeric_value(parsed_payload.get("num_cajas"))
+    except Exception as e:
+        print(f"[WARN] No se pudo extraer num_cajas con recorte: {e}")
+        return ""
+    finally:
+        if os.path.exists(crop_path):
+            os.remove(crop_path)
+
+
 def parse_json_response(content):
     cleaned = content.strip()
     if cleaned.startswith("```"):
@@ -80,7 +160,7 @@ def parse_json_response(content):
 
     fecha = normalize_extracted_value(payload.get("fecha"))
     pedido_num = normalize_extracted_value(payload.get("pedido_num"))
-    num_cajas = normalize_extracted_value(payload.get("num_cajas"))
+    num_cajas = normalize_numeric_value(payload.get("num_cajas"))
     responsable = normalize_extracted_value(payload.get("responsable"), "SIN RESPONSABLE")
 
     productos = []
@@ -88,7 +168,7 @@ def parse_json_response(content):
         if not isinstance(producto, dict):
             continue
         codigo = normalize_extracted_value(producto.get("codigo")).upper()
-        cantidad = normalize_extracted_value(producto.get("cantidad"))
+        cantidad = normalize_numeric_value(producto.get("cantidad"))
         if codigo and cantidad:
             productos.append([codigo, cantidad])
 
@@ -151,7 +231,7 @@ def parse_openai_response(content):
             elif "pedido" in key:
                 fields["pedido_num"] = value
             elif "cajas" in key:
-                fields["num_cajas"] = value
+                fields["num_cajas"] = normalize_numeric_value(value)
             elif "responsable" in key:
                 fields["responsable"] = value
             continue
@@ -159,12 +239,12 @@ def parse_openai_response(content):
         if parsing_productos:
             product_match = re.match(r"^([A-Za-z0-9]+)\s*[,;|]\s*(\d+)\s*$", line)
             if product_match:
-                productos.append([product_match.group(1), product_match.group(2)])
+                productos.append([product_match.group(1), normalize_numeric_value(product_match.group(2))])
 
     fila_valida = [
         fields["fecha"],
         fields["pedido_num"],
-        fields["num_cajas"],
+        normalize_numeric_value(fields["num_cajas"]),
         normalize_extracted_value(fields["responsable"], "SIN RESPONSABLE"),
     ]
     if not fila_valida[0] or not fila_valida[1] or not fila_valida[2]:
@@ -411,6 +491,10 @@ def procesar_evaluacion(message):
         # 3. Procesar la respuesta de OpenAI
         datos = response.choices[0].message.content.strip()
         fila_valida, productos = parse_openai_response(datos)
+        num_cajas_enfocado = extract_num_cajas_with_focus(temp_path)
+
+        if fila_valida:
+            fila_valida[2] = num_cajas_enfocado or fila_valida[2] or sum_product_quantities(productos)
 
         # Contar chocolates
         total_chocolates = 0
